@@ -5,22 +5,28 @@ A Retrieval-Augmented Generation (RAG) chat application built on Azure. Upload P
 ## Architecture
 
 ```
-┌────────────┐  HTTP   ┌───────────────┐  Search   ┌──────────────────┐
-│  Streamlit │────────▶│  FastAPI       │──────────▶│  Azure AI Search │
-│  Frontend  │◀────────│  Backend       │◀──────────│  (documents-index)│
-└────────────┘         │                │           └────────┬─────────┘
-                       │  POST /api/chat│                    │ Indexer
-                       │  GET  /status  │                    │ (every 5 min)
-                       │  POST /run     │                    │
-                       └───────┬────────┘           ┌────────▼─────────┐
-                               │ RAG                │  Azure Blob      │
-                               ▼                    │  Storage (PDFs)  │
-                       ┌───────────────┐            └────────▲─────────┘
-                       │  Azure OpenAI │                     │
-                       │  GPT-4o       │            ┌────────┴─────────┐
-                       └───────────────┘            │  Azure Functions │
-                                                    │  CRUD /api/docs  │
-                                                    └──────────────────┘
+┌──────────────────┐         ┌──────────────────┐         ┌──────────────────┐
+│    Streamlit     │  HTTP   │     FastAPI       │ Search  │  Azure AI Search │
+│    Frontend      │────────▶│     Backend       │────────▶│ (documents-index)│
+│                  │◀────────│                   │◀────────│                  │
+└──────────────────┘         │  POST /api/chat   │         └────────┬─────────┘
+                             │  GET  /api/status │                  │
+                             │  POST /api/run    │                  │ Indexer
+                             └────────┬──────────┘                  │ (every 5 min)
+                                      │                             │
+                                      │ RAG                         │
+                                      ▼                             ▼
+                             ┌──────────────────┐         ┌──────────────────┐
+                             │   Azure OpenAI   │         │   Azure Blob     │
+                             │   GPT-4o         │         │   Storage (PDFs) │
+                             └──────────────────┘         └──────────────────┘
+                                                                    ▲
+                                                                    │ CRUD
+                                                                    │
+                                                          ┌──────────────────┐
+                                                          │  Azure Functions │
+                                                          │  /api/documents  │
+                                                          └──────────────────┘
 ```
 
 All service-to-service auth uses **Managed Identities** (no keys or connection strings).
