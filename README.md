@@ -4,23 +4,21 @@ A Retrieval-Augmented Generation (RAG) chat application built on Azure. Upload P
 
 ## Architecture
 
-```
-┌────────────────┐        ┌────────────────┐        ┌────────────────┐
-│   Streamlit    │  HTTP  │    FastAPI     │ Search │ Azure AI Search│
-│   Frontend     │───────▶│    Backend     │───────▶│  (docs index)  │
-│                │◀───────│                │◀───────│                │
-└────────────────┘        └───────┬────────┘        └───────┬────────┘
-                                  │ RAG                     │ Indexer
-                                  ▼                         ▼ (5 min)
-                          ┌────────────────┐        ┌────────────────┐
-                          │  Azure OpenAI  │        │   Azure Blob   │
-                          │     GPT-4o     │        │ Storage (PDFs) │
-                          └────────────────┘        └───────┬────────┘
-                                                            │ CRUD
-                                                    ┌───────┴────────┐
-                                                    │ Azure Functions│
-                                                    │ /api/documents │
-                                                    └────────────────┘
+```mermaid
+flowchart LR
+    Frontend["Streamlit\nFrontend"]
+    Backend["FastAPI\nBackend"]
+    Search["Azure AI Search\n(documents-index)"]
+    OpenAI["Azure OpenAI\nGPT-4o"]
+    Blob["Azure Blob\nStorage (PDFs)"]
+    Functions["Azure Functions\n/api/documents"]
+
+    Frontend -- "HTTP" --> Backend
+    Backend -- "Search" --> Search
+    Search -- "Results" --> Backend
+    Backend -- "RAG" --> OpenAI
+    Search -- "Indexer\n(every 5 min)" --> Blob
+    Functions -- "CRUD" --> Blob
 ```
 
 All service-to-service auth uses **Managed Identities** (no keys or connection strings).
