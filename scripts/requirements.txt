@@ -1,0 +1,4 @@
+azure-identity>=1.15.0
+azure-search-documents>=11.6.0
+azure-storage-blob>=12.19.0
+fpdf2>=2.7.0

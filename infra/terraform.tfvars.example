@@ -1,0 +1,6 @@
+subscription_id     = "your-subscription-id"
+project_name        = "indexer-demo"
+project_name_short  = "idxdemo"       # Max 10 chars, lowercase alphanumeric — used for storage account names
+resource_group_name = "rg-indexer-demo"
+location            = "westus"
+# All other resource names are auto-generated: st<short><suffix>, srch-<name>-<suffix>, etc.

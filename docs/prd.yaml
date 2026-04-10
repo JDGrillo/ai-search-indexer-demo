@@ -1,0 +1,109 @@
+prd_id: indexer-demo
+version: "1.0.0"
+status: final
+
+features:
+  - name: "Azure Infrastructure (Terraform)"
+    overview: |
+      Terraform-managed provisioning of Azure AI Search, Blob Storage, Azure AI Foundry (OpenAI model hosting),
+      Managed Identities (system-assigned on AI Search, user-assigned for backend), RBAC role assignments,
+      and a scheduled blob indexer with change/delete detection. All service-to-service auth via Managed Identity.
+    status: planned
+
+  - name: "RAG Chat Backend"
+    overview: |
+      FastAPI backend providing REST endpoints for chat (search + OpenAI via AI Foundry RAG), 
+      document management (upload/list/delete blobs), and indexer control (status/trigger).
+      All Azure SDK clients authenticate via DefaultAzureCredential (Managed Identity).
+    status: planned
+
+  - name: "Streamlit Chat Frontend"
+    overview: |
+      Streamlit web app with chat interface for RAG Q&A, sidebar for document upload/management, 
+      and indexer status panel with manual trigger.
+    status: planned
+
+  - name: "Indexer Change Detection Validation"
+    overview: |
+      End-to-end test workflow verifying the indexer detects added, updated, and soft-deleted 
+      PDFs in Blob Storage and reflects changes in the search index and chat responses.
+    status: planned
+
+state_machines:
+  - name: "Indexer Lifecycle"
+    states: ["idle", "running", "success", "error"]
+    transitions:
+      - from: idle
+        to: running
+        trigger: "Scheduled interval (PT5M) or manual trigger"
+      - from: running
+        to: success
+        trigger: "Indexer completes processing all blobs"
+      - from: running
+        to: error
+        trigger: "Indexer encounters unrecoverable error"
+      - from: success
+        to: idle
+        trigger: "Awaiting next scheduled run"
+      - from: error
+        to: idle
+        trigger: "Error acknowledged; awaiting next run"
+
+  - name: "Document Lifecycle"
+    states: ["uploaded", "indexed", "updated", "re-indexed", "soft-deleted", "removed-from-index"]
+    transitions:
+      - from: uploaded
+        to: indexed
+        trigger: "Indexer processes new blob (LastModified detected)"
+      - from: indexed
+        to: updated
+        trigger: "User overwrites blob with new content"
+      - from: updated
+        to: re-indexed
+        trigger: "Indexer detects changed LastModified timestamp"
+      - from: indexed
+        to: soft-deleted
+        trigger: "User deletes blob (native soft delete)"
+      - from: soft-deleted
+        to: removed-from-index
+        trigger: "Indexer detects soft-deleted state"
+
+errors:
+  - code: "ERR_SEARCH_001"
+    message: "Azure AI Search index query failed"
+  - code: "ERR_OPENAI_001"
+    message: "Azure AI Foundry OpenAI completion request failed or timed out"
+  - code: "ERR_STORAGE_001"
+    message: "Blob upload or deletion failed"
+  - code: "ERR_INDEXER_001"
+    message: "Indexer status check or manual trigger failed"
+
+decisions:
+  - decision: "Use Streamlit for frontend"
+    rationale: "Rapid prototyping for demo/test app; user preference; built-in chat components"
+  - decision: "Use FastAPI for backend"
+    rationale: "Async support, fast performance, Python ecosystem alignment with Azure SDKs"
+  - decision: "Use Terraform for infrastructure"
+    rationale: "User preference; declarative IaC; good Azure provider support"
+  - decision: "Host OpenAI models in Azure AI Foundry"
+    rationale: "User requirement; centralized model management; integrates with Azure RBAC"
+  - decision: "Managed Identities for all service-to-service auth"
+    rationale: "Security best practice; no API keys to rotate or leak; Azure RBAC integration; user requirement"
+  - decision: "System-assigned MI on AI Search for blob access"
+    rationale: "AI Search indexer natively supports MI-based blob access via ResourceId connection string"
+  - decision: "User-assigned MI for backend app"
+    rationale: "Single identity for backend to access Search, Storage, and Foundry; portable across deployments"
+  - decision: "DefaultAzureCredential in backend code"
+    rationale: "Transparent auth chain: MI in production, az login for local dev; no code changes needed"
+  - decision: "RAG pattern with Azure OpenAI via Foundry"
+    rationale: "Natural language answers grounded in search results provide better UX for testing than raw results"
+  - decision: "Scheduled indexer at 5-minute interval"
+    rationale: "Automatic change detection without manual intervention; minimum practical interval for standard tier"
+  - decision: "Native blob soft delete for deletion detection"
+    rationale: "Built-in Azure feature; simpler than custom metadata approach; recommended by Microsoft docs"
+  - decision: "Use gpt-4o model in AI Foundry"
+    rationale: "User-selected model; strong general-purpose reasoning for RAG Q&A"
+  - decision: "Use built-in PDF parsing (no AI enrichment skillset)"
+    rationale: "Simpler setup for demo; sufficient for text-based PDFs; can upgrade to skillset later if needed"
+
+changes: []

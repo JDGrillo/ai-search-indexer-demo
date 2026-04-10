@@ -1,0 +1,543 @@
+plan_id: indexer-demo-001
+objective: |
+  Build a demo application to test Azure AI Search Indexer change detection against Azure Blob Storage.
+  Users upload/update PDF documents in Blob Storage, the indexer detects changes on a schedule, updates the search index,
+  and a Streamlit chat interface provides RAG-powered Q&A over the indexed content via OpenAI models hosted in Azure AI Foundry.
+  All Azure service-to-service communication uses Managed Identities (no API keys).
+created_at: "2026-04-07"
+created_by: requirements-planner
+status: approved
+research_confidence: high
+
+tldr: |
+  Terraform-provisioned Azure infrastructure (AI Search, Blob Storage, AI Foundry with OpenAI models) with a
+  scheduled blob indexer that auto-detects document changes. All service-to-service auth via Managed Identities
+  (system-assigned MI on AI Search with Storage Blob Data Reader; user-assigned MI on backend for Search, Storage,
+  and Foundry access). Python FastAPI backend serves as RAG pipeline (search + OpenAI via Foundry). Streamlit
+  frontend provides chat UI and document management. Primary goal is validating the indexer's "index changed
+  documents" behavior end-to-end.
+
+requirements_summary: |
+  1. Provision Azure AI Search, Blob Storage, and Azure AI Foundry (with OpenAI model deployments) via Terraform.
+  2. Configure Managed Identities for all service-to-service auth:
+     - AI Search system-assigned MI → Storage Blob Data Reader on Storage Account
+     - AI Search system-assigned MI → Cognitive Services OpenAI User on Foundry (if using integrated vectorization)
+     - User-assigned MI for backend → Search Index Data Reader + Search Service Contributor on AI Search
+     - User-assigned MI for backend → Storage Blob Data Contributor on Storage Account
+     - User-assigned MI for backend → Cognitive Services OpenAI User on AI Foundry
+  3. Configure a blob indexer with scheduled runs (every 5 minutes) and native change detection.
+  4. Configure native blob soft delete for deletion detection.
+  5. Build a FastAPI backend using DefaultAzureCredential (azure-identity SDK) for all Azure service access.
+  6. Build a Streamlit chat interface for asking questions against the index.
+  7. Provide document upload/update capability (upload PDFs to blob storage).
+  8. Demonstrate the full cycle: upload → index → query → update document → re-index → query shows updated content.
+
+open_questions: []
+
+risk_assessment:
+  overall_risk_level: medium
+  critical_risks:
+    - scenario: "Indexer change detection delay exceeds expectations"
+      likelihood: medium
+      impact: medium
+      mitigation: "Configure 5-minute schedule, provide manual re-run trigger in UI, document expected latency"
+    - scenario: "PDF text extraction quality issues with complex layouts"
+      likelihood: medium
+      impact: medium
+      mitigation: "Start with simple text-heavy PDFs using built-in PDF parsing; upgrade to AI enrichment skillset if quality is insufficient"
+    - scenario: "Terraform state management conflicts during iterative development"
+      likelihood: low
+      impact: medium
+      mitigation: "Use remote backend (Azure Storage) for Terraform state; document destroy/apply workflow"
+    - scenario: "OpenAI model token limits hit with large PDF content"
+      likelihood: medium
+      impact: high
+      mitigation: "Implement chunking in the search index or use integrated vectorization; set max token limits in prompts"
+    - scenario: "Managed Identity role assignment propagation delay"
+      likelihood: medium
+      impact: medium
+      mitigation: "Add depends_on for role assignments in Terraform; allow up to 10 minutes for propagation after apply"
+  assumptions:
+    - "User has an active Azure subscription with Owner or User Access Administrator role (needed for role assignments)"
+    - "Azure AI Foundry and OpenAI model access is approved for the subscription"
+    - "PDF documents are text-based (not scanned images requiring OCR)"
+    - "Development machine has Python 3.11+, Terraform, and Azure CLI installed"
+    - "User is authenticated via az login for local development (DefaultAzureCredential chain)"
+  constraints:
+    - "Indexer schedule minimum interval is 5 minutes for standard tier"
+    - "Blob indexer processes one container at a time"
+    - "Azure AI Foundry / OpenAI models have regional availability limitations"
+    - "PDF content extraction size limited by AI Search indexer tier limits"
+    - "RBAC role assignments can take up to 10 minutes to propagate"
+    - "No API keys used for service-to-service auth; all connections via Managed Identity"
+
+implementation_specification:
+  code_structure: |
+    indexer-demo/
+    ├── infra/                    # Terraform IaC
+    │   ├── main.tf
+    │   ├── variables.tf
+    │   ├── outputs.tf
+    │   └── terraform.tfvars.example
+    ├── backend/                  # FastAPI backend
+    │   ├── app/
+    │   │   ├── main.py           # FastAPI app entry
+    │   │   ├── config.py         # Environment/settings
+    │   │   ├── search.py         # Azure AI Search client
+    │   │   ├── openai_client.py  # Azure OpenAI RAG logic
+    │   │   └── storage.py        # Blob Storage upload/manage
+    │   ├── requirements.txt
+    │   └── Dockerfile
+    ├── frontend/                 # Streamlit UI
+    │   ├── app.py                # Main Streamlit chat app
+    │   ├── requirements.txt
+    │   └── Dockerfile
+    ├── docs/
+    │   ├── plan/
+    │   └── prd.yaml
+    ├── sample-docs/              # Sample PDFs for testing
+    └── README.md
+  affected_areas:
+    - "infra/ - All Azure resource provisioning"
+    - "backend/ - API layer for search, RAG, and blob management"
+    - "frontend/ - Streamlit chat interface"
+    - "sample-docs/ - Test PDF documents"
+  component_details:
+    - component: "Terraform Infrastructure"
+      responsibility: |
+        Provision and configure all Azure resources: AI Search, Blob Storage, AI Foundry (with OpenAI model deployments),
+        User-Assigned Managed Identity, and all RBAC role assignments. Enable system-assigned MI on AI Search.
+        Configure indexer data source with managed identity connection to blob storage (ResourceId connection string).
+      interfaces:
+        - "terraform apply/destroy CLI"
+        - "Output endpoints, resource IDs, and managed identity client IDs (no API keys)"
+    - component: "FastAPI Backend"
+      responsibility: "Serve REST API for chat queries (RAG), document upload/listing, and indexer status. Authenticate to all Azure services via DefaultAzureCredential (Managed Identity in production, az login locally)."
+      interfaces:
+        - "POST /api/chat - Send question, receive RAG answer"
+        - "POST /api/documents/upload - Upload PDF to blob storage"
+        - "GET /api/documents - List indexed documents"
+        - "GET /api/indexer/status - Check indexer run status"
+        - "POST /api/indexer/run - Trigger manual indexer run"
+    - component: "Streamlit Frontend"
+      responsibility: "Chat UI for asking questions, uploading/managing documents, and viewing indexer status"
+      interfaces:
+        - "Chat input/output panel"
+        - "Document upload sidebar"
+        - "Indexer status indicator"
+  dependencies:
+    - component: "Frontend → Backend"
+      relationship: "Streamlit calls FastAPI REST endpoints for all operations"
+    - component: "Backend → Azure AI Search"
+      relationship: "FastAPI queries search index via Azure SDK with DefaultAzureCredential; manages indexer via REST API"
+    - component: "Backend → Azure AI Foundry (OpenAI)"
+      relationship: "FastAPI sends search results as context to OpenAI models in Foundry for answer generation via DefaultAzureCredential"
+    - component: "Backend → Azure Blob Storage"
+      relationship: "FastAPI uploads/manages PDFs in blob container via DefaultAzureCredential"
+    - component: "Azure AI Search Indexer → Azure Blob Storage"
+      relationship: "Indexer reads blobs on schedule via system-assigned MI (Storage Blob Data Reader role), detects changes via LastModified timestamp"
+  integration_points:
+    - "Blob Storage container ↔ AI Search indexer data source (managed identity ResourceId connection)"
+    - "AI Search index ↔ FastAPI search queries (DefaultAzureCredential)"
+    - "FastAPI RAG endpoint ↔ Azure AI Foundry OpenAI chat completions API (DefaultAzureCredential)"
+    - "Streamlit HTTP calls ↔ FastAPI REST API"
+    - "RBAC role assignments linking Managed Identities to resource-level permissions"
+
+task_relationships:
+  - task: "TASK-001"
+    depends_on: []
+    provides_to: ["TASK-002", "TASK-003", "TASK-004", "TASK-005"]
+    interface: "Azure resource endpoints, managed identity client IDs, resource names"
+    format: "Terraform outputs (search_endpoint, storage_account_name, foundry_endpoint, managed_identity_client_id, etc.)"
+  - task: "TASK-002"
+    depends_on: ["TASK-001"]
+    provides_to: ["TASK-003"]
+    interface: "Sample PDF files uploaded to blob container"
+    format: "PDF files in Azure Blob Storage container"
+  - task: "TASK-003"
+    depends_on: ["TASK-001", "TASK-002"]
+    provides_to: ["TASK-004"]
+    interface: "REST API endpoints for chat, documents, indexer"
+    format: "FastAPI HTTP endpoints (JSON request/response)"
+  - task: "TASK-004"
+    depends_on: ["TASK-003"]
+    provides_to: ["TASK-005"]
+    interface: "Streamlit web application"
+    format: "Web UI served on localhost"
+  - task: "TASK-005"
+    depends_on: ["TASK-001", "TASK-003", "TASK-004"]
+    provides_to: ["TASK-006"]
+    interface: "Validated change detection workflow"
+    format: "Test results confirming indexer detects updates"
+  - task: "TASK-006"
+    depends_on: ["TASK-005"]
+    provides_to: []
+    interface: "Project documentation"
+    format: "README.md with setup, usage, and testing instructions"
+
+tasks:
+  - id: "TASK-001"
+    title: "Provision Azure infrastructure with Terraform"
+    description: |
+      Create Terraform configuration to provision:
+      - Azure Resource Group
+      - Azure Storage Account + Blob container (for PDF documents) with native soft delete enabled
+      - Azure AI Search service (standard tier for scheduled indexing) with system-assigned Managed Identity
+      - Azure AI Foundry hub/project with OpenAI gpt-4o model deployment
+      - User-Assigned Managed Identity for the backend application
+      - RBAC role assignments:
+        - AI Search system MI → Storage Blob Data Reader on Storage Account
+        - Backend user-assigned MI → Search Index Data Reader on AI Search
+        - Backend user-assigned MI → Search Service Contributor on AI Search (for indexer management)
+        - Backend user-assigned MI → Storage Blob Data Contributor on Storage Account
+        - Backend user-assigned MI → Cognitive Services OpenAI User on AI Foundry
+      - AI Search data source pointing to the blob container using managed identity (ResourceId connection string)
+      - AI Search index schema (content, metadata_storage_name, metadata_storage_path, metadata_storage_last_modified)
+      - AI Search indexer with 5-minute schedule and change detection enabled
+      - Data deletion detection policy (native blob soft delete) on the data source
+      - Output all endpoints, resource names, and managed identity client IDs needed by the backend (NO API keys)
+    execution_order: 1
+    agent: gem-implementer
+    priority: high
+    status: completed
+    depends_on: []
+    context_files:
+      - "infra/main.tf": "Main Terraform config"
+      - "infra/variables.tf": "Variable definitions"
+      - "infra/outputs.tf": "Output values for backend consumption"
+    estimated_effort: large
+    estimated_files: 3
+    estimated_lines: 400
+    focus_area: "infra/"
+    tech_stack:
+      - "Terraform >= 1.5"
+      - "azurerm provider >= 3.0"
+      - "azapi provider (for AI Foundry resources if needed)"
+      - "Azure AI Search"
+      - "Azure Blob Storage"
+      - "Azure AI Foundry (OpenAI model hosting)"
+      - "Azure Managed Identities (system-assigned + user-assigned)"
+      - "Azure RBAC role assignments"
+    test_coverage: "terraform plan validates; terraform apply provisions resources successfully"
+    verification:
+      - "terraform plan completes without errors"
+      - "terraform apply creates all resources"
+      - "AI Search indexer appears in Azure portal with 5-min schedule"
+      - "Blob container exists and is accessible"
+      - "AI Foundry model deployment is active"
+      - "System-assigned MI enabled on AI Search service"
+      - "All RBAC role assignments visible in Azure portal"
+    acceptance_criteria:
+      - "All Azure resources provisioned via terraform apply"
+      - "Indexer configured with PT5M schedule interval"
+      - "Native blob soft delete enabled on storage account"
+      - "Data source uses managed identity (ResourceId) connection — no storage keys"
+      - "Data source has soft delete detection policy"
+      - "AI Search system MI has Storage Blob Data Reader role on storage account"
+      - "Backend user-assigned MI has all required RBAC roles"
+      - "Terraform outputs include search_endpoint, storage_account_name, foundry_endpoint, managed_identity_client_id (NO API keys)"
+    failure_modes:
+      - scenario: "Azure AI Foundry / OpenAI model not available in target region"
+        likelihood: medium
+        impact: high
+        mitigation: "Parameterize region; fallback to eastus/eastus2 which have broad AI Foundry availability"
+      - scenario: "Terraform provider version incompatibility"
+        likelihood: low
+        impact: medium
+        mitigation: "Pin provider versions in required_providers block"
+      - scenario: "RBAC role assignment propagation delay causes auth failures"
+        likelihood: medium
+        impact: medium
+        mitigation: "Add depends_on in Terraform; document 5-10 minute propagation delay after initial apply"
+    requires_review: true
+    review_depth: standard
+    security_sensitive: true
+
+  - id: "TASK-002"
+    title: "Create sample PDF documents for testing"
+    description: |
+      Create 3-5 sample PDF documents with distinct, verifiable content to test the indexer:
+      - doc1.pdf: Company policy document (will be updated later to test change detection)
+      - doc2.pdf: Product FAQ document
+      - doc3.pdf: Technical specification document
+      Each document should have clear, searchable content that makes it easy to verify
+      which document a search result came from. Include a script or instructions to upload
+      them to the blob container.
+    execution_order: 2
+    agent: gem-implementer
+    priority: medium
+    status: completed
+    depends_on: ["TASK-001"]
+    context_files:
+      - "sample-docs/": "Directory for sample PDFs"
+    estimated_effort: small
+    estimated_files: 3
+    estimated_lines: 50
+    focus_area: "sample-docs/"
+    tech_stack:
+      - "Python"
+      - "fpdf2 or reportlab for PDF generation"
+      - "Azure CLI (az storage blob upload with --auth-mode login) or Python SDK with DefaultAzureCredential"
+    test_coverage: null
+    verification:
+      - "PDFs are readable and contain expected text"
+      - "Upload script successfully places files in blob container"
+      - "Indexer picks up and indexes all documents"
+    acceptance_criteria:
+      - "At least 3 sample PDFs created with distinct, searchable content"
+      - "Upload mechanism (script or instructions) documented"
+      - "Documents indexed successfully by the AI Search indexer"
+    failure_modes:
+      - scenario: "PDF format not parsed correctly by indexer"
+        likelihood: low
+        impact: medium
+        mitigation: "Use simple text-based PDFs; verify with indexer status API"
+
+  - id: "TASK-003"
+    title: "Build FastAPI backend with RAG pipeline"
+    description: |
+      Implement the Python FastAPI backend:
+      1. Configuration module: Load Azure resource endpoints and managed identity client ID from environment variables (NO API keys)
+      2. Auth module: Initialize DefaultAzureCredential from azure-identity SDK (uses managed identity in production, az login locally)
+      3. Search module: Query Azure AI Search index using azure-search-documents SDK with token credential
+      4. OpenAI module: Send search results as context to OpenAI models in Azure AI Foundry for chat completion (RAG pattern) using token credential
+      5. Storage module: Upload/list/delete PDFs in blob storage using azure-storage-blob SDK with token credential
+      6. API endpoints:
+         - POST /api/chat: Accept user question, search index, generate RAG response
+         - POST /api/documents/upload: Upload PDF file to blob container
+         - GET /api/documents: List documents in blob container
+         - DELETE /api/documents/{name}: Delete a document from blob container
+         - GET /api/indexer/status: Return current indexer status and last run time
+         - POST /api/indexer/run: Trigger an on-demand indexer run
+      7. CORS middleware for Streamlit frontend access
+      All Azure SDK clients must use DefaultAzureCredential — no API keys or connection strings with keys.
+    execution_order: 3
+    agent: gem-implementer
+    priority: high
+    status: completed
+    depends_on: ["TASK-001"]
+    context_files:
+      - "backend/app/main.py": "FastAPI app entry point"
+      - "backend/app/config.py": "Settings and env vars"
+      - "backend/app/search.py": "Azure AI Search client"
+      - "backend/app/openai_client.py": "Azure OpenAI RAG logic"
+      - "backend/app/storage.py": "Blob storage operations"
+      - "backend/requirements.txt": "Python dependencies"
+    estimated_effort: large
+    estimated_files: 3
+    estimated_lines: 400
+    focus_area: "backend/"
+    tech_stack:
+      - "Python 3.11+"
+      - "FastAPI"
+      - "uvicorn"
+      - "azure-identity (DefaultAzureCredential)"
+      - "azure-search-documents"
+      - "azure-storage-blob"
+      - "openai (Azure OpenAI SDK with Azure AD token provider)"
+      - "python-dotenv"
+      - "python-multipart"
+    test_coverage: "Manual API testing via curl/httpie; indexer status endpoint validates connectivity"
+    verification:
+      - "FastAPI server starts without errors"
+      - "POST /api/chat returns RAG-generated answer referencing indexed documents"
+      - "POST /api/documents/upload successfully uploads PDF to blob"
+      - "GET /api/documents returns list of blobs"
+      - "GET /api/indexer/status returns valid indexer state"
+      - "POST /api/indexer/run triggers indexer execution"
+    acceptance_criteria:
+      - "All 6 API endpoints functional and returning correct responses"
+      - "RAG pipeline produces grounded answers from search index content"
+      - "All Azure SDK clients authenticate via DefaultAzureCredential — no API keys in code or config"
+      - "File upload creates blob in the correct container"
+      - "Indexer status correctly reflects last run time and document count"
+      - "Error responses return appropriate HTTP status codes"
+    failure_modes:
+      - scenario: "Azure OpenAI rate limiting on rapid queries"
+        likelihood: medium
+        impact: medium
+        mitigation: "Add retry logic with exponential backoff; set reasonable token limits"
+      - scenario: "Search index returns no results for valid queries"
+        likelihood: medium
+        impact: high
+        mitigation: "Verify indexer has completed; add fallback message when no results found"
+      - scenario: "DefaultAzureCredential fails in local dev environment"
+        likelihood: medium
+        impact: medium
+        mitigation: "Document prerequisite: az login; optionally support AZURE_CLIENT_ID env var for user-assigned MI"
+    requires_review: true
+    review_depth: standard
+    security_sensitive: true
+
+  - id: "TASK-004"
+    title: "Build Streamlit chat frontend"
+    description: |
+      Implement the Streamlit application:
+      1. Chat interface: Message input, conversation history display, streaming-style output
+      2. Sidebar - Document Management:
+         - File uploader for PDFs
+         - List of currently indexed documents
+         - Delete button per document
+      3. Sidebar - Indexer Status:
+         - Current indexer state (running/idle/error)
+         - Last successful run timestamp
+         - Button to trigger manual indexer run
+      4. Connect all UI actions to FastAPI backend endpoints
+      5. Session state management for conversation history
+    execution_order: 4
+    agent: gem-implementer
+    priority: high
+    status: completed
+    depends_on: ["TASK-003"]
+    context_files:
+      - "frontend/app.py": "Streamlit main app"
+      - "frontend/requirements.txt": "Python dependencies"
+    estimated_effort: medium
+    estimated_files: 2
+    estimated_lines: 250
+    focus_area: "frontend/"
+    tech_stack:
+      - "Python 3.11+"
+      - "Streamlit"
+      - "requests"
+    test_coverage: null
+    verification:
+      - "Streamlit app launches without errors"
+      - "Chat input sends question and displays RAG response"
+      - "Document upload via sidebar works end-to-end"
+      - "Document list refreshes after upload/delete"
+      - "Indexer status displays correctly"
+      - "Manual indexer trigger button works"
+    acceptance_criteria:
+      - "Chat interface displays conversation history correctly"
+      - "PDF upload from sidebar creates blob and confirms success"
+      - "Document list shows all blobs in container"
+      - "Indexer status panel shows run state and timestamp"
+      - "UI is responsive and provides user feedback during operations"
+    failure_modes:
+      - scenario: "Streamlit session state lost on rerun"
+        likelihood: medium
+        impact: low
+        mitigation: "Use st.session_state for chat history; persist across reruns"
+    requires_review: true
+    review_depth: standard
+    security_sensitive: false
+
+  - id: "TASK-005"
+    title: "Validate indexer change detection end-to-end"
+    description: |
+      Create a structured test workflow to validate the indexer's change detection:
+      1. Initial state: Verify all sample documents are indexed and searchable
+      2. Change detection test:
+         - Ask a question about doc1.pdf content, record the answer
+         - Update doc1.pdf with new/modified content, re-upload to blob (overwrite)
+         - Wait for indexer scheduled run (or trigger manually)
+         - Ask the same question, verify answer reflects updated content
+      3. Addition detection test:
+         - Upload a new doc4.pdf with unique content
+         - Wait for indexer run
+         - Query for the new content, verify it appears in search results
+      4. Deletion detection test:
+         - Delete doc4.pdf from blob storage (soft delete)
+         - Wait for indexer run
+         - Verify doc4.pdf content no longer appears in search results
+      Document the expected vs actual behavior at each step.
+    execution_order: 5
+    agent: gem-browser-tester
+    priority: high
+    status: pending
+    depends_on: ["TASK-001", "TASK-003", "TASK-004"]
+    context_files:
+      - "sample-docs/": "Test PDF documents"
+      - "frontend/app.py": "Streamlit UI for testing"
+      - "backend/app/main.py": "API endpoints"
+    estimated_effort: medium
+    estimated_files: 1
+    estimated_lines: 100
+    focus_area: null
+    verification:
+      - "Initial indexing captures all sample documents"
+      - "Updated document content is reflected in search results after indexer run"
+      - "New document is discoverable after indexer run"
+      - "Deleted document is removed from search results after indexer run"
+    acceptance_criteria:
+      - "Change detection: Updated PDF content appears in RAG answers within one indexer cycle"
+      - "Addition detection: New PDF is searchable within one indexer cycle"
+      - "Deletion detection: Soft-deleted PDF is removed from index within one indexer cycle"
+      - "Test results documented with timestamps and evidence"
+    failure_modes:
+      - scenario: "Indexer does not pick up changes within expected interval"
+        likelihood: medium
+        impact: high
+        mitigation: "Use manual indexer trigger to force run; check indexer status for errors; verify blob LastModified timestamp updated"
+      - scenario: "Soft delete not detected by indexer"
+        likelihood: low
+        impact: high
+        mitigation: "Verify native soft delete policy is configured on data source; check retention period settings"
+    validation_matrix:
+      - scenario: "Query returns answer from original document"
+        steps:
+          - "Open Streamlit chat"
+          - "Type a question specific to doc1.pdf content"
+          - "Verify answer references doc1.pdf content"
+        expected_result: "RAG answer includes information from original doc1.pdf"
+      - scenario: "Updated document content appears after re-indexing"
+        steps:
+          - "Upload modified doc1.pdf via sidebar"
+          - "Wait for indexer run or trigger manually"
+          - "Ask the same question again"
+        expected_result: "RAG answer now reflects the updated doc1.pdf content"
+      - scenario: "New document is searchable after indexing"
+        steps:
+          - "Upload doc4.pdf with unique topic"
+          - "Wait for indexer run"
+          - "Query about doc4.pdf topic"
+        expected_result: "RAG answer includes information from doc4.pdf"
+      - scenario: "Deleted document removed from results"
+        steps:
+          - "Delete doc4.pdf via sidebar"
+          - "Wait for indexer run"
+          - "Query about doc4.pdf topic"
+        expected_result: "RAG answer no longer references doc4.pdf content"
+
+  - id: "TASK-006"
+    title: "Write project documentation (README)"
+    description: |
+      Create comprehensive README.md covering:
+      1. Project overview and purpose (testing Azure AI Search indexer change detection)
+      2. Architecture diagram (text-based) showing component relationships
+      3. Prerequisites (Azure subscription, tools, CLI versions)
+      4. Setup instructions:
+         - Terraform init/plan/apply
+         - Backend configuration and startup
+         - Frontend configuration and startup
+         - Sample document upload
+      5. Usage guide: How to test change detection workflow
+      6. Troubleshooting: Common issues and solutions
+      7. Cleanup: terraform destroy instructions
+    execution_order: 6
+    agent: gem-documentation-writer
+    priority: medium
+    status: pending
+    depends_on: ["TASK-005"]
+    context_files:
+      - "README.md": "Project documentation"
+    estimated_effort: small
+    estimated_files: 1
+    estimated_lines: 200
+    focus_area: null
+    task_type: documentation
+    audience: developers
+    coverage_matrix:
+      - "Project overview and architecture"
+      - "Setup and deployment instructions"
+      - "Usage guide for change detection testing"
+      - "Troubleshooting guide"
+    verification:
+      - "README covers all setup steps"
+      - "Instructions are reproducible from scratch"
+    acceptance_criteria:
+      - "Developer can go from zero to running demo following only the README"
+      - "Change detection test workflow clearly documented"
+      - "Cleanup instructions included"
+    failure_modes: []
