@@ -47,8 +47,8 @@ variable "tags" {
   }
 }
 
-# variable "allowed_ip_address" {
-#   description = "IP address (CIDR) allowed to access Function App and Backend"
-#   type        = string
-#   default     = "0.0.0.0/32"
-# }
+variable "allowed_ip_address" {
+  description = "IP address (CIDR) allowed to access Function App and Backend"
+  type        = string
+  default     = "0.0.0.0/32"
+}
